@@ -77,3 +77,9 @@ site/.generated/
 
 # Committed pointer at REASONIX.md; overrides a global CLAUDE.md ignore rule.
 !/CLAUDE.md
+
+.opencode
+.smit
+.codegraph
+.fossil-settings
+_FOSSIL_
