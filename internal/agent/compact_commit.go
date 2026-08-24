@@ -52,6 +52,12 @@ func (a *Agent) commitSummaryProjection(commit summaryProjectionCommit) (Compact
 	}
 	receipt := state.LastReceipt
 	a.sess.compactionMu.Unlock()
+	// Queue cache diagnostics: the projection install changes the provider-visible
+	// prefix. Without this, CompareShape cannot attribute the next request's miss
+	// to compaction (it only sees "system"/"tools" changes from CompareShape).
+	a.sess.conversation.NoteContentRewrite("compact_auto")
+	// Invalidate request byte cache: compaction changes the prefix.
+	a.sess.requestCache.invalidate()
 	a.emitContextMaintenance(receipt)
 	return state, nil
 }

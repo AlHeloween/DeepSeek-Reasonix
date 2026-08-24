@@ -142,6 +142,12 @@ func (a *Agent) pruneToolResultsToProjectionLocked(trigger string) (bool, error)
 	}
 	a.sess.checkpointState = "applied"
 	a.sess.compactionMu.Unlock()
+	// Queue cache diagnostics: tool-result pruning changes the provider-visible
+	// prefix. Without this, CompareShape cannot attribute the next request's miss
+	// to pruning.
+	a.sess.conversation.NoteContentRewrite("prune")
+	// Invalidate request byte cache: pruning changes the prefix.
+	a.sess.requestCache.invalidate()
 	a.emitContextMaintenance(receipt)
 	return true, nil
 }

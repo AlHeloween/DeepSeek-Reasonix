@@ -131,6 +131,9 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	// One user trigger. Overflow is a one-shot physical recovery path only.
 	forceFold := policy.Force || policy.Trigger == CompactionTriggerManual || policy.Trigger == CompactionTriggerOverflow || est >= hard
 	if est < fold && !forceFold {
+		// Below compaction trigger: generate out-of-band summary if cadence reached.
+		// This uses the same prefix as normal turns → cache hit.
+		_ = a.maybeGenerateOutOfBandSummary(ctx)
 		return prepared, nil
 	}
 
@@ -147,6 +150,22 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 				(policy.Trigger == CompactionTriggerOverflow && est < hard) {
 				return prepared, nil
 			}
+		}
+	}
+
+	// Two-layer path: if we have stored summaries, do mechanical compact (0 LLM tokens).
+	if a.sess.compactionState.StoredSummaries != nil && len(a.sess.compactionState.StoredSummaries.Summaries) > 0 {
+		outcome, err := a.twoLayerCompact(ctx, policy.Trigger)
+		if err != nil {
+			// Fall through to single-layer path on error
+			slog.Warn("agent: two-layer compact failed, falling back to single-layer", "err", err)
+		} else if outcome == CompactionInstalled {
+			result := m.currentPrepared()
+			a.sess.compaction.stuck = false
+			a.sess.compaction.stuckInputHash = ""
+			a.sess.compaction.consecutive = 0
+			a.sess.compaction.failedTurn.Store(0)
+			return result, nil
 		}
 	}
 

@@ -51,6 +51,10 @@ type sessionRuntime struct {
 	// across a conversation swap; see sessionCarryOver.
 	lastPrefixShape     PrefixShape
 	haveLastPrefixShape bool
+
+	// requestCache holds the frozen provider request from the last successful
+	// turn for prefix reuse. Invalidated on compaction, rewind, model change.
+	requestCache requestByteCache
 }
 
 // reset rebinds the runtime to a new conversation. Every field is named here or
@@ -74,6 +78,7 @@ func (r *sessionRuntime) reset(s *Session) {
 	r.compaction.consecutive = 0
 	r.compaction.failedTurn.Store(0)
 	r.compaction.lastTurn.Store(0)
+	r.requestCache.invalidate()
 }
 
 // session returns the bound conversation under the lock that guards the

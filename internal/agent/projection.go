@@ -134,7 +134,11 @@ type CompactionState struct {
 	// an explicit unsupported response before that latch was set.
 	NativeContextEditingAccepted bool      `json:"native_context_editing_accepted,omitempty"`
 	ContextEditingFallbackLocal  bool      `json:"context_editing_fallback_local,omitempty"`
-	UpdatedAt                    time.Time `json:"updated_at"`
+	// StoredSummaries holds out-of-band summaries for two-layer compaction.
+	// Summaries are generated with the same prefix as normal turns (cache hit)
+	// and stored outside the content window. Mechanical compact folds them in.
+	StoredSummaries *StoredSummaries `json:"stored_summaries,omitempty"`
+	UpdatedAt       time.Time        `json:"updated_at"`
 }
 
 // CompactionTelemetry is the structured observability record for one

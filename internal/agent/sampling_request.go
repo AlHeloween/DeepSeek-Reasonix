@@ -118,7 +118,16 @@ func (a *Agent) prepareSamplingRequest(ctx context.Context) (samplingRequest, er
 	}
 	shape := a.requestCalibrationShape(frozen.req)
 	a.sess.output.activeReqShape.Store(&shape)
-	return samplingRequest{req: freezeProviderRequest(frozen.req)}, nil
+	result := samplingRequest{req: freezeProviderRequest(frozen.req)}
+	// Cache the frozen request for prefix reuse on the next turn.
+	// Between compaction events, the prefix (system + tools + old messages) is
+	// byte-identical. Only new messages are appended. Caching avoids re-serialization.
+	systemHash := ""
+	if len(result.req.Messages) > 0 && result.req.Messages[0].Role == provider.RoleSystem {
+		systemHash = shortHash(result.req.Messages[0].Content)
+	}
+	a.sess.requestCache.cacheRequest(result.req, systemHash, a.currentPromptCacheKey())
+	return result, nil
 }
 
 func (a *Agent) buildSamplingRequest(ctx context.Context, trigger string) (samplingRequest, error) {
