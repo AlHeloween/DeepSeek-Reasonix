@@ -209,7 +209,10 @@ func (a *Agent) beginRunTurn(ctx context.Context, input string) (rawInput string
 	a.task.prepareScope(scoped, scope.ID)
 	a.svc.sink.Emit(event.Event{Kind: event.TurnStarted})
 	a.emitTurnPhase(event.TurnPhaseWorking)
-	input = a.withTurnPreferences(providerInput)
+	// The UTC stamp is part of the durable turn text: written once here, it
+	// replays byte-identically on every later request (cache-stable dating).
+	// RawContent keeps the user's pristine input without the stamp.
+	input = appendUTCTurnStamp(a.withTurnPreferences(providerInput))
 	userCreatedAt := time.Now().UnixMilli()
 	a.activeTurnCreatedAt.Store(userCreatedAt)
 	rawContent := rawInput

@@ -154,8 +154,10 @@ func (m ContextManager) prepareOnce(ctx context.Context, policy ContextPreparePo
 	}
 
 	// Two-layer path: if we have stored summaries, do mechanical compact (0 LLM tokens).
+	// Locked variant: Prepare already holds compactionRunMu for this transaction;
+	// the self-locking wrapper would deadlock on the non-reentrant mutex.
 	if a.sess.compactionState.StoredSummaries != nil && len(a.sess.compactionState.StoredSummaries.Summaries) > 0 {
-		outcome, err := a.twoLayerCompact(ctx, policy.Trigger)
+		outcome, err := a.twoLayerCompactLocked(ctx, policy.Trigger)
 		if err != nil {
 			// Fall through to single-layer path on error
 			slog.Warn("agent: two-layer compact failed, falling back to single-layer", "err", err)

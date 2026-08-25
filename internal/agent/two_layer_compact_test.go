@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
 )
@@ -163,5 +165,69 @@ func TestFormatSummaryMessage(t *testing.T) {
 	}
 	if !strings.Contains(msg.Content, "test summary") {
 		t.Fatal("missing summary text")
+	}
+}
+
+// TestTwoLayerCompactUnderPrepareNoDeadlock is the regression guard for the
+// production deadlock: ContextManager.Prepare holds compactionRunMu for the
+// whole transaction, so the mechanical fold must run on the Locked variant.
+// With stored summaries present above the trigger this used to re-lock the
+// non-reentrant mutex and hang the run loop forever.
+func TestTwoLayerCompactUnderPrepareNoDeadlock(t *testing.T) {
+	a := &Agent{
+		agentConfig: agentConfig{contextWindow: 40_000},
+		svc:         agentServices{tools: tool.NewRegistry()},
+	}
+	a.sess.conversation = NewSession("system prompt")
+	// Enough history that the 16% tail budget cannot swallow everything:
+	// ten ~2K-token turns leave a mid-history fold boundary.
+	for i := range 10 {
+		a.sess.conversation.Add(provider.Message{Role: provider.RoleUser, Content: strings.Repeat("turn body ", 200) + string(rune('a'+i))})
+		a.sess.conversation.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat("answer body ", 200)})
+	}
+	a.sess.compactionState = CompactionState{
+		SchemaVersion: compactionStateSchemaCurrent,
+		StoredSummaries: &StoredSummaries{
+			Summaries:   []StoredSummary{{Text: "prior summary", Tokens: 10, CoveredMsg: 2}},
+			TotalTokens: 10,
+			Generation:  1,
+		},
+	}
+
+	var started int
+	a.svc.sink = event.FuncSink(func(e event.Event) {
+		if e.Kind == event.CompactionStarted {
+			started++
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// Force pressure Prepare: crosses the fold check with summaries present,
+		// exercising exactly the path that deadlocked before the Locked split.
+		_, _ = a.contextManager().Prepare(ctx, ContextPreparePolicy{
+			Trigger: CompactionTriggerPressure, Force: true,
+		})
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(6 * time.Second):
+		t.Fatal("Prepare hung: two-layer compact deadlocked on compactionRunMu")
+	}
+
+	if v := a.currentProjectionVersion(); v == 0 {
+		t.Fatal("mechanical fold did not install a projection (version=0)")
+	}
+	if started == 0 {
+		t.Fatal("mechanical fold must emit CompactionStarted (event parity with single-layer)")
+	}
+	stored := a.sess.compactionState.StoredSummaries
+	if stored == nil || len(stored.Summaries) != 0 {
+		t.Fatalf("stored summaries must reset after compact, got %+v", stored)
 	}
 }

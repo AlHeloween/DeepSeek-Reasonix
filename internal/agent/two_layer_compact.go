@@ -193,13 +193,20 @@ func (a *Agent) maybeGenerateOutOfBandSummary(ctx context.Context) error {
 	return nil
 }
 
-// twoLayerCompact performs a mechanical fold of stored summaries + recent tail.
-// This is 0 LLM tokens — pure system operation. The projection becomes:
-// [system + s1 + s2 + ... + recent tail]
+// twoLayerCompact is the self-locking entry for direct callers (tests, tools).
+// Production Prepare paths must use twoLayerCompactLocked: ContextManager
+// already holds compactionRunMu for the whole maintenance transaction, and
+// sync.Mutex is not reentrant — re-locking here deadlocks the run loop.
 func (a *Agent) twoLayerCompact(ctx context.Context, trigger string) (CompactionOutcome, error) {
 	a.sess.compactionRunMu.Lock()
 	defer a.sess.compactionRunMu.Unlock()
+	return a.twoLayerCompactLocked(ctx, trigger)
+}
 
+// twoLayerCompactLocked performs a mechanical fold of stored summaries + recent
+// tail. Caller holds compactionRunMu. This is 0 LLM tokens — pure system
+// operation. The projection becomes: [system + s1 + s2 + ... + recent tail]
+func (a *Agent) twoLayerCompactLocked(ctx context.Context, trigger string) (CompactionOutcome, error) {
 	canonical, transcriptVersion := a.sess.conversation.snapshotMessagesVersion()
 	a.sess.compactionMu.Lock()
 	stateSnapshot := a.sess.compactionState
@@ -258,7 +265,9 @@ func (a *Agent) twoLayerCompact(ctx context.Context, trigger string) (Compaction
 	// Project for provider visibility
 	projMsgs = provider.ProjectionMessages(projMsgs)
 
-	// Splice with canonical tail for live updates
+	// Splice with canonical tail for live updates. canonical[len:] is empty by
+	// construction (the fold covers through the end); kept as an explicit splice
+	// point so a future covered<len variant cannot forget tail replay.
 	spliced := append(append([]provider.Message(nil), projMsgs...), canonical[len(canonical):]...)
 
 	projTokens := a.estimatedVisibleRequestTokens(spliced)
@@ -268,6 +277,11 @@ func (a *Agent) twoLayerCompact(ctx context.Context, trigger string) (Compaction
 	if projTokens >= sourceTokens {
 		return CompactionNoop, nil
 	}
+
+	// Event parity with single-layer compaction: UI cards and metrics count the
+	// Started/Done pair; emitting only Done left mechanical folds invisible to
+	// compactionsPerTurn and rendered no CompactionCard.
+	a.svc.sink.Emit(event.Event{Kind: event.CompactionStarted, Compaction: event.Compaction{Trigger: trigger}})
 
 	// Commit the mechanical fold
 	activeTurn := a.activeTurnCreatedAt.Load()
