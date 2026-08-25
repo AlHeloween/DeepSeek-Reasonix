@@ -124,10 +124,6 @@ func (t *sessionReadTarget) Execute(_ context.Context, args json.RawMessage) (st
 	return string(header) + "\n" + strings.TrimRight(b.String(), "\n"), nil
 }
 
-func archiveLocalOnlyNote() string {
-	return ""
-}
-
 // renderArchivedMessage formats one archived message with its canonical index,
 // bounded body, and a pointer when the body was clipped locally.
 func renderArchivedMessage(idx int, m provider.Message) string {

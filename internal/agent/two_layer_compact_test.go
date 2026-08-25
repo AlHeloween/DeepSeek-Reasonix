@@ -126,18 +126,6 @@ func TestTwoLayerSummaryCadence(t *testing.T) {
 	}
 }
 
-func TestTwoLayerCompactTrigger(t *testing.T) {
-	a := &Agent{
-		agentConfig: agentConfig{contextWindow: 512_000, maxOutputTokens: 32_768},
-	}
-	trigger := a.twoLayerCompactTrigger()
-	// Should be 512000 - 32768 - 256 = 478976
-	expected := 512_000 - 32_768 - 256
-	if trigger != expected {
-		t.Fatalf("twoLayerCompactTrigger = %d, want %d", trigger, expected)
-	}
-}
-
 func TestTwoLayerCompactNoSummaries(t *testing.T) {
 	// twoLayerCompact should return CompactionNoop when no stored summaries
 	a := &Agent{

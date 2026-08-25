@@ -48,23 +48,6 @@ func (a *Agent) twoLayerSummaryCadence() int {
 	return min(summaryCadenceTokens, max(1024, window/8))
 }
 
-// twoLayerCompactTrigger returns the token threshold for mechanical compact.
-// This is higher than the current 80% trigger — compact only when the model
-// window is nearly full.
-func (a *Agent) twoLayerCompactTrigger() int {
-	window := a.effectiveContextWindow()
-	if window <= 0 {
-		return a.compactTrigger() // fallback to single-layer
-	}
-	// Compact at usable(model) = context − headroom
-	// headroom = output budget + protocol reserve
-	headroom := a.maxOutputTokens + protocolReserveTokens
-	if headroom <= 0 {
-		headroom = 32_768 // default 32K headroom
-	}
-	return max(1, window-headroom)
-}
-
 // maybeGenerateOutOfBandSummary checks if enough new content has accumulated
 // since the last out-of-band summary, and if so, generates one with the same
 // prefix as normal turns (cache hit).
@@ -392,17 +375,4 @@ func mergeStoredSummaries(summaries []StoredSummary) string {
 		b.WriteString(s.Text)
 	}
 	return b.String()
-}
-
-// modelVisibleWithStoredSummaries extends modelVisibleFromProjection to include
-// stored summaries in the visible view. This is used by the two-layer path.
-func modelVisibleWithStoredSummaries(st CompactionState, canonical []provider.Message) []provider.Message {
-	base := modelVisibleFromProjection(st.Projection, canonical)
-	if st.StoredSummaries == nil || len(st.StoredSummaries.Summaries) == 0 {
-		return base
-	}
-	// Stored summaries are already in the projection messages via formatSummaryMessage
-	// during twoLayerCompact. For out-of-band summaries not yet compacted,
-	// they live outside the content window and don't affect the visible view.
-	return base
 }
