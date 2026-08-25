@@ -77,6 +77,8 @@ func (a *Agent) summaryProjectionState(commit summaryProjectionCommit) Compactio
 	}
 	// LastReceipt is authoritative; do not mirror last_trigger/last_mode/token
 	// counters or top-level blocked_* fields (stripped again on save).
+	// Any projection install invalidates out-of-band summary bookkeeping:
+	// their CoveredMsg indices describe the pre-install canonical view.
 	return CompactionState{
 		SchemaVersion: compactionStateSchemaCurrent, TranscriptVersion: commit.transcriptVersion,
 		Generation: commit.generation + 1, PromptCacheKey: a.currentPromptCacheKey(),
@@ -86,6 +88,6 @@ func (a *Agent) summaryProjectionState(commit summaryProjectionCommit) Compactio
 			SummaryHash: summaryHash, SourceTokens: commit.sourceTokens, ProjectionTokens: commit.projectionTokens,
 			ViewInputHash: commit.inputHash, ViewOutputHash: commit.outputHash, CreatedAt: now,
 		},
-		LastReceipt: receipt, UpdatedAt: now,
+		StoredSummaries: &StoredSummaries{}, LastReceipt: receipt, UpdatedAt: now,
 	}
 }

@@ -84,71 +84,62 @@ func (a *Agent) maybeGenerateOutOfBandSummary(ctx context.Context) error {
 		}
 	}
 
-	// Calculate tokens since last summary
-	tokensSinceLastSummary := 0
+	// Cadence gate: single pass over the canonical range the new content occupies.
 	lastSummaryCovered := 0
 	if st.StoredSummaries != nil && len(st.StoredSummaries.Summaries) > 0 {
 		last := st.StoredSummaries.Summaries[len(st.StoredSummaries.Summaries)-1]
 		lastSummaryCovered = last.CoveredMsg
 	}
-
-	// Count tokens in new messages since last summary
-	for i := lastSummaryCovered; i < len(canonical); i++ {
-		if i < len(visible) {
-			tokensSinceLastSummary += estimateMessagesTokens(visible[i : i+1])
-		}
+	if lastSummaryCovered >= len(canonical) {
+		return nil
 	}
-
-	// Check cadence
-	if tokensSinceLastSummary < a.twoLayerSummaryCadence() {
+	newTokens := estimateMessagesTokens(modelInputMessages(canonical[lastSummaryCovered:]))
+	if newTokens < a.twoLayerSummaryCadence() {
 		return nil // not enough new content
 	}
 
-	// Determine fold region: from last summary cover point to ~80% of new content
-	// (keep recent tail for context)
-	foldStart := lastSummaryCovered
-	foldEnd := len(canonical)
-	if foldEnd <= foldStart {
-		return nil
+	head := 0
+	if len(visible) > 0 && visible[0].Role == provider.RoleSystem {
+		head = 1
 	}
 
-	// Keep recent tail (16% of window)
-	recentBudget := a.recentTailBudget()
-	recentEnd := foldEnd
-	for recentEnd > foldStart && estimateMessagesTokens(modelInputMessages(canonical[recentEnd-1:foldEnd])) < recentBudget {
-		recentEnd--
-	}
-	if recentEnd <= foldStart+1 {
-		return nil // too little to summarize
+	// Layer-1 rides the LIVE window: the summarizer request is the ordinary
+	// visible prefix byte-for-byte (system + every message, recent tail included)
+	// plus the trailing instruction — alignment holds by construction, matching
+	// the append-instruction/rollback shape used elsewhere without mutating the
+	// shared transcript. summarize() emits usage telemetry itself.
+	instructions := ""
+	var summary string
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		summary, _, err = a.summarize(ctx, visible[head:], instructions)
+		if err != nil {
+			return fmt.Errorf("out-of-band summary: %w", err)
+		}
+		if summary == "" {
+			return nil
+		}
+		missing := missingSummarySections(summary)
+		if len(missing) == 0 {
+			break
+		}
+		if attempt == 0 {
+			// One corrective retry: name the gaps and demand all headings.
+			instructions = "Your previous briefing omitted required sections: " +
+				strings.Join(missing, ", ") +
+				". Re-output ALL seven headings exactly; write \"(none)\" under a section that genuinely has no content."
+			continue
+		}
+		// Persist failure: store nothing, keep cadence counter armed so the
+		// next Prepare retries instead of silently accepting a broken digest.
+		return fmt.Errorf("out-of-band summary incomplete after retry; missing: %s", strings.Join(missing, ", "))
 	}
 
-	fold := canonical[foldStart:recentEnd]
-	if len(fold) == 0 {
-		return nil
-	}
-
-	// Generate summary with SAME prefix as normal turns (cache hit)
-	// The summaryRequest builder already prepends system message
-	summary, usage, err := a.summarize(ctx, fold, "")
-	if err != nil {
-		return fmt.Errorf("out-of-band summary: %w", err)
-	}
-	if summary == "" {
-		return nil
-	}
-
-	// Emit usage
-	if usage != nil && (usage.TotalTokens > 0 || usage.RequestCount > 0) {
-		a.svc.sink.Emit(event.Event{Kind: event.Usage, ModelRef: a.modelRef, Usage: usage, Pricing: a.svc.pricing, UsageSource: event.UsageSourceCompaction})
-	}
-
-	// Store summary
-	hash := sha256.Sum256([]byte(summary))
 	stored := StoredSummary{
 		Text:       summary,
 		Tokens:     estimateTextTokens(summary),
-		CoveredMsg: recentEnd,
-		Hash:       hex.EncodeToString(hash[:8]),
+		CoveredMsg: len(canonical), // captured against the full live window
+		Hash:       hex.EncodeToString(sha256Sum8(summary)),
 	}
 
 	a.sess.compactionMu.Lock()
@@ -320,6 +311,50 @@ func (a *Agent) twoLayerCompactLocked(ctx context.Context, trigger string) (Comp
 	}})
 
 	return CompactionInstalled, nil
+}
+
+// summarySections lists the headings every stored digest must carry. A section
+// counts as filled when any non-blank line follows the heading; "(none)" is an
+// acceptable explicit empty. Broken handles poison later folds, so Layer-1
+// validates before storing and retries once with corrective feedback.
+var summarySections = []string{
+	"## Standing facts & constraints",
+	"## Goal",
+	"## Decisions & rationale",
+	"## Files & code",
+	"## Commands & outcomes",
+	"## Errors & fixes",
+	"## Pending & next step",
+}
+
+// missingSummarySections returns required headings that are absent or empty.
+func missingSummarySections(text string) []string {
+	var missing []string
+	for i, heading := range summarySections {
+		idx := strings.Index(text, heading)
+		if idx < 0 {
+			missing = append(missing, heading)
+			continue
+		}
+		bodyStart := idx + len(heading)
+		bodyEnd := len(text)
+		if i+1 < len(summarySections) {
+			if next := strings.Index(text[bodyStart:], "\n## "); next >= 0 {
+				bodyEnd = bodyStart + next
+			}
+		}
+		body := strings.TrimSpace(text[bodyStart:bodyEnd])
+		if body == "" {
+			missing = append(missing, heading)
+		}
+	}
+	return missing
+}
+
+// sha256Sum8 returns the first 8 bytes of SHA-256 as a slice for hex encoding.
+func sha256Sum8(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:8]
 }
 
 // mergeStoredSummaries concatenates stored summaries into a single text block.

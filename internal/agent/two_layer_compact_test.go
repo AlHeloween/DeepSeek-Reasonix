@@ -3,7 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -229,5 +233,111 @@ func TestTwoLayerCompactUnderPrepareNoDeadlock(t *testing.T) {
 	stored := a.sess.compactionState.StoredSummaries
 	if stored == nil || len(stored.Summaries) != 0 {
 		t.Fatalf("stored summaries must reset after compact, got %+v", stored)
+	}
+}
+
+// validBriefingFixture satisfies missingSummarySections so Layer-1 accepts it.
+const validBriefingFixture = "## Standing facts & constraints\n- go1.26 required\n\n## Goal\n- keep cache aligned\n\n## Decisions & rationale\n- live-prefix probes\n\n## Files & code\n- internal/agent/two_layer_compact.go\n\n## Commands & outcomes\n- go build ./... ok\n\n## Errors & fixes\n- deadlock fixed\n\n## Pending & next step\n- land R3 handles"
+
+func TestMissingSummarySections(t *testing.T) {
+	full := validBriefingFixture
+	if got := missingSummarySections(full); len(got) != 0 {
+		t.Fatalf("valid briefing flagged missing %v", got)
+	}
+	partial := "## Goal\n- x\n\n## Pending & next step\n- y"
+	got := missingSummarySections(partial)
+	if len(got) != 5 {
+		t.Fatalf("missing = %v (%d), want 5", got, len(got))
+	}
+	emptyBody := strings.Replace(full, "- keep cache aligned\n", "", 1)
+	got = missingSummarySections(emptyBody)
+	found := false
+	for _, m := range got {
+		if m == "## Goal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("empty section body must be reported missing")
+	}
+}
+
+// TestOutOfBandSummaryRequestPrefixAligned guards the F2 fix: the Layer-1
+// summarizer request must share its leading prefix with ordinary sampling
+// requests (system + earliest history). Building the fold from
+// lastSummaryCovered instead diverged at the second message position and
+// cold-missed the entire summary call.
+func TestOutOfBandSummaryRequestPrefixAligned(t *testing.T) {
+	var mu sync.Mutex
+	var summaryReq []json.RawMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if isSummarizeRequest(body) {
+			mu.Lock()
+			summaryReq = decodeMessages(body)
+			mu.Unlock()
+			writeSSE(w, t,
+				streamChunk(deltaText(validBriefingFixture)),
+				finishChunk("stop"),
+				usageChunk(100, 20, 0, 100))
+			return
+		}
+		writeSSE(w, t,
+			streamChunk(deltaText("ok")),
+			finishChunk("stop"),
+			usageChunk(10, 5, 0, 10))
+	}))
+	defer srv.Close()
+
+	a, _ := newAgent(t, srv.URL, tool.NewRegistry(), 40_000, 4)
+
+	// History big enough to cross the cadence (max(1024, 40000/8) = 5000 tokens).
+	const turnBody = "history body for alignment probe "
+	for i := range 6 {
+		a.sess.conversation.Add(provider.Message{Role: provider.RoleUser, Content: strings.Repeat(turnBody, 150) + string(rune('a'+i))})
+		a.sess.conversation.Add(provider.Message{Role: provider.RoleAssistant, Content: strings.Repeat(turnBody, 150)})
+	}
+	// A prior summary covering mid-history: with the pre-fix code the request
+	// started at canonical[3] and lost prefix alignment; it must not.
+	a.sess.compactionState = CompactionState{
+		SchemaVersion: compactionStateSchemaCurrent,
+		StoredSummaries: &StoredSummaries{
+			Summaries:   []StoredSummary{{Text: "prior", Tokens: 1, CoveredMsg: 3}},
+			TotalTokens: 1,
+			Generation:  1,
+		},
+	}
+
+	if err := a.maybeGenerateOutOfBandSummary(context.Background()); err != nil {
+		t.Fatalf("maybeGenerateOutOfBandSummary: %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(summaryReq) < 4 {
+		t.Fatalf("summary request captured %d messages, want >=4", len(summaryReq))
+	}
+	var first struct {
+		Role    provider.Role `json:"role"`
+		Content string        `json:"content"`
+	}
+	if err := json.Unmarshal(summaryReq[0], &first); err != nil {
+		t.Fatalf("decode first message: %v", err)
+	}
+	if first.Role != provider.RoleSystem {
+		t.Fatalf("first message role = %q, want system", first.Role)
+	}
+	var second struct {
+		Role    provider.Role `json:"role"`
+		Content string        `json:"content"`
+	}
+	if err := json.Unmarshal(summaryReq[1], &second); err != nil {
+		t.Fatalf("decode second message: %v", err)
+	}
+	if second.Content == "" || !strings.Contains(second.Content, strings.TrimSpace(strings.Repeat(turnBody, 150))) {
+		t.Fatal("second message must be the EARLIEST history turn (prefix-aligned), got a later slice")
+	}
+	if second.Role != provider.RoleUser {
+		t.Fatalf("second message role = %q, want user", second.Role)
 	}
 }
