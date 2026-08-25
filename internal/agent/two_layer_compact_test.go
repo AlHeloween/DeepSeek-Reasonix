@@ -230,6 +230,19 @@ func TestTwoLayerCompactUnderPrepareNoDeadlock(t *testing.T) {
 	if started == 0 {
 		t.Fatal("mechanical fold must emit CompactionStarted (event parity with single-layer)")
 	}
+	// R5: the frozen body must carry the recovery briefing after the digests.
+	a.sess.compactionMu.Lock()
+	projMsgs := a.sess.compactionState.Projection.Messages
+	a.sess.compactionMu.Unlock()
+	foundNotice := false
+	for _, m := range projMsgs {
+		if strings.Contains(m.Content, "<compaction-recovery>") {
+			foundNotice = true
+		}
+	}
+	if !foundNotice {
+		t.Fatal("projection lacks <compaction-recovery> briefing")
+	}
 	stored := a.sess.compactionState.StoredSummaries
 	if stored == nil || len(stored.Summaries) != 0 {
 		t.Fatalf("stored summaries must reset after compact, got %+v", stored)
@@ -310,6 +323,15 @@ func TestOutOfBandSummaryRequestPrefixAligned(t *testing.T) {
 
 	if err := a.maybeGenerateOutOfBandSummary(context.Background()); err != nil {
 		t.Fatalf("maybeGenerateOutOfBandSummary: %v", err)
+	}
+
+	// R3: the stored digest must carry its exact canonical range handle.
+	a.sess.compactionMu.Lock()
+	storedList := a.sess.compactionState.StoredSummaries.Summaries
+	last := storedList[len(storedList)-1]
+	a.sess.compactionMu.Unlock()
+	if !strings.Contains(last.Text, `<summary-archive from="3" to="13"/>`) {
+		t.Fatalf("archive handle missing or wrong range: %q", last.Text[max(0, len(last.Text)-80):])
 	}
 
 	mu.Lock()

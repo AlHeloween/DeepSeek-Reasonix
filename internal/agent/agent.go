@@ -1147,6 +1147,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	a.bindToolResultSessionCapability()
+	a.bindSessionReadSessionCapability()
 	a.maybeArmForkFromEnv()
 	a.maybeWrapForkCaptureProvider()
 	if warnDeprecatedRetention {

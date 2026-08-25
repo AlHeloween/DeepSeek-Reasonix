@@ -426,6 +426,10 @@ type UseCapabilityTool struct {
 	// leak into planner or child frontends before their Agent binds them.
 	toolResultMu      sync.RWMutex
 	toolResultSession func() *Session
+	// sessionReadSession backs the session:read archive capability; same
+	// binding discipline as toolResultSession (CloneForAgent leaves it nil).
+	sessionReadMu      sync.RWMutex
+	sessionReadSession func() *Session
 	// state is session-shared connection observation when built via
 	// MCPCapabilityRuntime; nil falls back to a private map for tests.
 	state *mcpProxySharedState
@@ -609,6 +613,16 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 			base.ReadOnly = true
 			return base, nil
 		}
+		if id == sessionReadCapabilityID {
+			out, err := t.inspectSessionRead()
+			if err != nil {
+				return tool.ResolvedCall{}, err
+			}
+			base.SkipExecute = true
+			base.Result = out
+			base.ReadOnly = true
+			return base, nil
+		}
 		out, err := t.inspect(ctx, id)
 		if err != nil {
 			if t.audit != nil {
@@ -659,6 +673,9 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 		}
 		if id == sessionToolResultCapabilityID {
 			return t.resolveSessionToolResult(p.Arguments, base)
+		}
+		if id == sessionReadCapabilityID {
+			return t.resolveSessionRead(p.Arguments, base)
 		}
 		return t.resolveCall(ctx, id, p.Arguments, base)
 	default:
@@ -746,6 +763,12 @@ func (t *UseCapabilityTool) listCapabilities() (string, error) {
 		caps = append(caps, capInfo{
 			ID: sessionToolResultCapabilityID, Kind: "session", Name: "tool_result", Status: "ready", ReadOnly: true,
 			Description: "Read one bounded page from a complete tool result retained in this agent's current session.",
+		})
+	}
+	if t.currentSessionReadTarget() != nil {
+		caps = append(caps, capInfo{
+			ID: sessionReadCapabilityID, Kind: "session", Name: "read", Status: "ready", ReadOnly: true,
+			Description: "Replay exact earlier conversation messages by canonical index range; digests carry summary-archive handles.",
 		})
 	}
 	if t.catalog != nil {

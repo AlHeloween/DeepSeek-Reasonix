@@ -136,7 +136,7 @@ func (a *Agent) maybeGenerateOutOfBandSummary(ctx context.Context) error {
 	}
 
 	stored := StoredSummary{
-		Text:       summary,
+		Text: summary + fmt.Sprintf("\n\n<summary-archive from=\"%d\" to=\"%d\"/>", lastSummaryCovered, len(canonical)),
 		Tokens:     estimateTextTokens(summary),
 		CoveredMsg: len(canonical), // captured against the full live window
 		Hash:       hex.EncodeToString(sha256Sum8(summary)),
@@ -249,6 +249,12 @@ func (a *Agent) twoLayerCompactLocked(ctx context.Context, trigger string) (Comp
 	for _, s := range stateSnapshot.StoredSummaries.Summaries {
 		projMsgs = append(projMsgs, formatSummaryMessage(s.Text))
 	}
+	// Post-fold recovery briefing (R5): one deterministic notice telling the
+	// model what just happened and which tools restore lost context. Lives in
+	// the frozen body, so its bytes ride the fold's own cold miss exactly once.
+	if len(stateSnapshot.StoredSummaries.Summaries) > 0 {
+		projMsgs = append(projMsgs, formatCompactionRecoveryNotice())
+	}
 
 	// Recent tail
 	projMsgs = append(projMsgs, canonical[foldStart:]...)
@@ -355,6 +361,22 @@ func missingSummarySections(text string) []string {
 func sha256Sum8(s string) []byte {
 	sum := sha256.Sum256([]byte(s))
 	return sum[:8]
+}
+
+// compactionRecoveryNoticeText is byte-stable by design: no clocks, no counts.
+// It rides the fold's own cold miss once and then stays a fixed part of every
+// later request's cached prefix.
+const compactionRecoveryNoticeText = "<compaction-recovery>\n" +
+	"The conversation above was just compacted: older turns exist only inside the <compaction-summary> digests.\n" +
+	"The full transcript archive is intact and addressable — restoring context is cheap:\n" +
+	"- use_capability(action=\"call\", capability_id=\"session:read\", arguments={\"from\":N,\"to\":M}) — replay exact earlier messages; each digest ends with its <summary-archive from to/> range.\n" +
+	"- use_capability(action=\"call\", capability_id=\"session:tool_result\"). — full originals of locally truncated tool outputs.\n" +
+	"Rules: treat digest facts as pointers, not ground truth; verify against the archive before any consequential action that depends on them. When a summarized thread becomes relevant again, reopen it proactively instead of guessing from the digest.\n" +
+	"</compaction-recovery>"
+
+// formatCompactionRecoveryNotice builds the single post-fold user-turn notice.
+func formatCompactionRecoveryNotice() provider.Message {
+	return provider.Message{Role: provider.RoleUser, Content: compactionRecoveryNoticeText}
 }
 
 // mergeStoredSummaries concatenates stored summaries into a single text block.
