@@ -1,0 +1,71 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "permission": {
+    "external_directory": {
+      "C:\\Windows\\*": "allow",
+      "C:\\Program Files\\*": "allow",
+      "C:\\Program Files (x86)\\*": "allow",
+      "/usr/*": "allow",
+      "/bin/*": "allow",
+      "/sbin/*": "allow",
+      "/etc/*": "allow",
+      "*": "ask"
+    },
+    "destructive-file": "deny",
+    "destructive-db": "deny",
+    "destructive-git": "allow",
+    "destructive-fossil": "deny",
+    "bash": "allow",
+    "powershell": "allow",
+    "cmd": "allow",
+    "run": "allow",
+    "edit": "allow",
+    "doom_loop": "allow",
+    "webfetch": "allow",
+    "messagesearch": "allow",
+    "session-read": "allow"
+  },
+  "external_directory_mode": "allow",
+  "agent": {
+    "plan": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "build": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "general": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "explore": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "orchestrator": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "coder": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "researcher": {
+      "model": "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "options": {}
+    },
+    "media": {
+      "model": "nvidia/nvidia/nemotron-3-nano-omni-30b-a3b-reasoning",
+      "options": {}
+    },
+    "reasoning": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    },
+    "build_mode": {
+      "model": "opencode/mimo-v2.5-free",
+      "options": {}
+    }
+  }
+}
